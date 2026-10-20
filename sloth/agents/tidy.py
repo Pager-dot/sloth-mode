@@ -243,12 +243,12 @@ def _ask_model(
 
 def _parse_batch(raw: str) -> list[dict[str, Any]]:
     from ..model import parse_json
+    from .brief import coerce_list
 
-    payload = parse_json(raw)
-    if isinstance(payload, dict):
-        payload = payload.get("files", [])
-    if not isinstance(payload, list):
-        raise ModelOutputError(f"expected a list of files, got {type(payload).__name__}")
+    # An empty list is a valid answer ("no opinion"), not a failure: every
+    # file the model skips falls back to the heuristic and is labelled as
+    # such in the plan, so the degradation is visible rather than silent.
+    payload = coerce_list(parse_json(raw), "files")
     return [item for item in payload if isinstance(item, dict)]
 
 

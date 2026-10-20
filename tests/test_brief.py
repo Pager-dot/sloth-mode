@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sloth.agents import brief
 from sloth.model import NullModel
 
@@ -268,3 +270,87 @@ def test_render_without_color_has_no_escapes(tmp_path, config):
     rendered = brief.summarise([tmp_path], config, NullModel()).render()
 
     assert "\033[" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# degrading loudly
+#
+# Found against gemma4:31b on Ollama Cloud, which does not enforce the JSON
+# schema: it answered the map step with {"action_items": [...]} where the
+# schema said {"points": [...]}. Reading only the expected key produced an
+# empty list, so the brief fell back to keyword extraction while printing
+# "no model running" — a silent failure that looked like success.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"points": ["Deposit due Friday"]},
+        {"action_items": ["Deposit due Friday"]},  # the gemma4 shape
+        {"bullets": ["Deposit due Friday"]},
+        ["Deposit due Friday"],  # a bare list, no wrapper at all
+    ],
+)
+def test_map_step_survives_a_renamed_field(tmp_path, config, fake_model, payload):
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([payload, {"summary": ["it worked"], "action_items": []}])
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is True
+    assert result.model_error is None
+    assert result.summary == ["it worked"]
+
+
+def test_fenced_json_is_accepted(tmp_path, config, fake_model):
+    """Unconstrained backends wrap answers in markdown; parse it anyway."""
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model(
+        [
+            '```json\n{"points": ["Deposit due Friday"]}\n```',
+            '```json\n{"summary": ["it worked"], "action_items": []}\n```',
+        ]
+    )
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is True
+    assert result.summary == ["it worked"]
+
+
+def test_a_useless_model_reply_is_reported_not_hidden(tmp_path, config, fake_model):
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([{"nothing": "useful"}])
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is False
+    assert result.model_error is not None
+    assert "nothing usable" in result.model_error
+    # The reader must not be told "no model running" when one was running.
+    assert "model failed" in result.ignorable
+    assert result.summary  # the keyword pass still produced something
+
+
+def test_an_unreachable_model_is_distinguished_from_a_useless_one(
+    tmp_path, config, fake_model
+):
+    from sloth.model import ModelUnavailable
+
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([ModelUnavailable("server fell over")])
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.model_error == "server fell over"
+    assert "model failed" in result.ignorable
+
+
+def test_no_model_configured_says_unavailable_not_failed(tmp_path, config):
+    write(tmp_path, "chat.txt", CHAT)
+
+    result = brief.summarise([tmp_path], config, NullModel())
+
+    assert result.model_error is None
+    assert "model unavailable" in result.ignorable
