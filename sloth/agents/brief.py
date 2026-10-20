@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -112,7 +112,7 @@ class Brief:
     ignorable: str = ""
     sources: list[Source] = field(default_factory=list)
     used_model: bool = False
-    #: Why the model was not used, when one was configured but did not work.
+    #: Why the model was not used, when one was configured. Shown by the CLI.
     #: ``None`` means no model was asked for in the first place.
     model_error: str | None = None
     generated_at: datetime = field(default_factory=datetime.now)
@@ -313,7 +313,10 @@ def summarise(
                 brief.ignorable = reduced["ignorable"]
                 brief.used_model = True
                 return brief
-            brief.model_error = "the model returned no usable points"
+            brief.model_error = (
+                "the model returned nothing usable from any chunk "
+                "(no schema enforcement on this backend?)"
+            )
         except (ModelUnavailable, ModelOutputError) as exc:
             # Falling back is fine; pretending no model was configured is
             # not. The caller needs to be able to tell the two apart.
@@ -321,9 +324,33 @@ def summarise(
 
     brief.summary, brief.action_items = _extractive(combined, settings)
     brief.ignorable = "everything the keyword pass could not rank" + (
-        " (model unavailable)" if brief.model_error else " (no model running)"
+        " (model unavailable)" if brief.model_error is None else " (model failed)"
     )
     return brief
+
+
+def coerce_list(payload: Any, preferred: str) -> list:
+    """Pull a list out of a model's answer, even if it renamed the field.
+
+    A JSON schema is a request, not a guarantee: some hosted backends do not
+    constrain decoding at all, and a model will happily return
+    ``{"action_items": [...]}`` where the schema said ``{"points": [...]}``.
+    Reading only the expected key turns that into silence, which is worse
+    than a wrong answer because it looks like success.
+    """
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, Mapping):
+        return []
+    value = payload.get(preferred)
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        return [value]
+    for other in payload.values():
+        if isinstance(other, list) and other:
+            return other
+    return []
 
 
 def _map_chunks(model: Model, chunks: Sequence[str]) -> list[str]:
@@ -339,21 +366,10 @@ def _map_chunks(model: Model, chunks: Sequence[str]) -> list[str]:
             ],
             schema=CHUNK_SCHEMA,
         )
-        payload = parse_json(raw)
-        if isinstance(payload, dict):
-            # Unschema'd, the model may pick its own name for the one array
-            # it was asked for; take it rather than losing the whole chunk.
-            payload = payload.get("points") or _only_list(payload)
-        if isinstance(payload, list):
-            points.extend(b for b in (_as_bullet(p) for p in payload) if b)
+        payload = coerce_list(parse_json(raw), "points")
+        points.extend(b for b in (_as_bullet(p) for p in payload) if b)
     # Chat threads repeat themselves; the reduce step should not have to.
     return _dedupe(points)
-
-
-def _only_list(payload: dict) -> list:
-    """The single list in a one-key object, if that is what we were given."""
-    lists = [v for v in payload.values() if isinstance(v, list)]
-    return lists[0] if len(lists) == 1 else []
 
 
 def _as_bullet(value: Any) -> str:
@@ -399,7 +415,7 @@ def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict
     summary = [str(s).strip() for s in (summary or []) if str(s).strip()]
 
     items: list[dict[str, str]] = []
-    for item in payload.get("action_items") or []:
+    for item in coerce_list(payload.get("action_items"), "action_items"):
         if isinstance(item, str) and item.strip():
             items.append({"what": item.strip()})
         elif isinstance(item, dict) and str(item.get("what", "")).strip():

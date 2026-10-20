@@ -25,6 +25,11 @@ people who would rather not install or download a model at all.
     ``gpt-oss:120b``: Apache-2.0 open weights at a size no laptop will hold,
     and zero disk used here.
 
+A hosted backend does not have to hand us the key. Some environments put an
+egress proxy in front that injects ``Authorization`` for allowed hosts, so the
+client never sees the secret. We therefore always attempt the call and let the
+server decide; ``needs_token`` only means "no key *here*", not "will fail".
+
 The last two *do* send your prompts over the network, which is the trade for
 not hosting anything. ``ModelConfig.is_local`` knows the difference and
 ``sloth doctor`` says which you are on.
@@ -216,8 +221,6 @@ class LocalModel:
 
     def _request(self, path: str, payload: Mapping[str, Any] | None) -> Any:
         config = self.config
-        if config.needs_token:
-            raise ModelUnavailable(token_help(config.api))
 
         url = config.base_url.rstrip("/") + path
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -272,7 +275,11 @@ class LocalModel:
         by falling back to heuristics.
         """
         if self.config.api in TOKEN_VARS:
-            return not self.config.needs_token
+            # We may hold no key at all and still be able to call: a secrets
+            # proxy can inject the Authorization header on the way out. Only
+            # the server can really answer this, and a 401 at the first call
+            # drops the agents into their heuristic fallback anyway.
+            return True
         try:
             self.list_models()
         except ModelUnavailable:

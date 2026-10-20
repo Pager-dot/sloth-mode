@@ -358,7 +358,7 @@ def cmd_brief(args: argparse.Namespace) -> int:
 
     if result.model_error:
         # Warn on stderr, so --markdown stdout stays a pure document.
-        out.warn(f"no model used: {result.model_error}")
+        out.warn(f"fell back to keyword summarising: {result.model_error}")
 
     if args.save:
         config.brief_dir.mkdir(parents=True, exist_ok=True)
@@ -507,9 +507,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     assert isinstance(model, LocalModel)
     if model_config.needs_token:
-        out.always(out.red("  status          no token"))
-        out.always(f"  {out.dim(token_help(model_config.api))}")
-        return 1
+        # Not fatal: a secrets proxy may add the header on the way out. The
+        # probe below is what actually settles it.
+        out.always(out.yellow("  token           none here; expecting one upstream"))
 
     try:
         installed = model.list_models()
@@ -550,8 +550,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         except ModelUnavailable as exc:
             out.always(out.red("  token           rejected"))
             out.always(f"  {out.dim(str(exc))}")
+            if model_config.needs_token:
+                out.always(f"  {out.dim(token_help(model_config.api))}")
             return 1
-        out.always(out.green(f"  token           works (it said: {reply!r})"))
+        how = "injected upstream" if model_config.needs_token else "ours"
+        out.always(out.green(f"  token           works ({how}; it said: {reply!r})"))
 
     out.always("")
     out.always(out.green("  everything it needs is here. go and do nothing."))

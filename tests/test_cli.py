@@ -229,17 +229,18 @@ def test_undo_cleans_up_the_folders_it_created(messy_dir, capsys):
     assert (messy_dir / "ACME Invoice March 2024.pdf").exists()
 
 
-def test_doctor_explains_a_missing_hugging_face_token(monkeypatch, capsys):
+def test_doctor_reports_a_hosted_backend_with_no_visible_token(monkeypatch, capsys):
     for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
-    code = main(["--api", "hf", "doctor"])
+    # Point at a dead port: no test may touch the real internet.
+    code = main(["--api", "hf", "--base-url", "http://127.0.0.1:1", "doctor"])
 
     out = capsys.readouterr().out
     assert code == 1
     assert "google/gemma-3-4b-it" in out
-    assert "no token" in out
-    assert "huggingface.co/settings/tokens" in out
+    # Not a verdict: a proxy may add the header on the way out.
+    assert "none here; expecting one upstream" in out
     # A hosted backend must say so out loud.
     assert "prompts are sent to" in out
 
@@ -260,42 +261,60 @@ def test_an_unknown_backend_is_a_clean_error(capsys):
         main(["--api", "wishful-thinking", "doctor"])
 
 
-def test_doctor_explains_a_missing_ollama_cloud_key(monkeypatch, capsys):
+def test_doctor_reports_the_cloud_backend(monkeypatch, capsys):
     for name in ("OLLAMA_API_KEY", "OLLAMA_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
-    code = main(["--api", "cloud", "doctor"])
+    code = main(["--api", "cloud", "--base-url", "http://127.0.0.1:1", "doctor"])
 
     out = capsys.readouterr().out
     assert code == 1
     assert "gpt-oss:120b" in out
-    assert "no token" in out
-    assert "ollama.com/settings/keys" in out
-    assert "prompts are sent to https://ollama.com" in out
+    assert "none here; expecting one upstream" in out
+    assert "prompts are sent to" in out
 
 
-def test_brief_warns_when_the_model_failed(tmp_path, capsys, monkeypatch):
-    """A failed model is a warning, not silence dressed up as --no-model."""
+def test_doctor_probes_the_token_on_a_hosted_backend(server, capsys):
+    """A public catalogue is not proof the service will talk to us."""
+    server.reply["content"] = "ok"
+
+    code = main(["--api", "cloud", "--base-url", server.url, "doctor"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "token           works" in out
+    assert "injected upstream" in out  # we hold no key of our own
+
+
+def test_doctor_fails_when_the_token_is_rejected(server, capsys):
+    server.reply.update(status=401, error="Unauthorized")
+
+    code = main(["--api", "cloud", "--base-url", server.url, "doctor"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "token           rejected" in out
+    assert "ollama.com/settings/keys" in out  # and how to get a working one
+
+
+def test_brief_warns_when_it_falls_back(tmp_path, capsys, monkeypatch):
+    (tmp_path / "chat.txt").write_text("Ada: the deployment finished\n")
+
+    # A model that is present but answers uselessly must not look like success.
     from sloth.agents import brief as brief_agent
 
-    (tmp_path / "chat.txt").write_text(
-        "Priya: can you confirm the booking tomorrow morning please\n"
-    )
-
-    real = brief_agent.summarise
-
-    def failing(paths, config, model, **kwargs):
-        result = real(paths, config, model, **kwargs)
-        result.model_error = "ollama.com returned HTTP 500"
+    def useless(*_args, **_kwargs):
+        result = brief_agent.Brief()
+        result.summary = ["keywords only"]
+        result.model_error = "the model returned nothing usable"
         return result
 
-    monkeypatch.setattr(brief_agent, "summarise", failing)
+    monkeypatch.setattr(brief_agent, "summarise", useless)
     code = main(["--no-model", "brief", str(tmp_path)])
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "ollama.com returned HTTP 500" in captured.err
-    assert "no model used" in captured.err
+    assert "fell back to keyword summarising" in captured.err
 
 
 def test_brief_markdown_stays_clean_when_the_model_failed(tmp_path, capsys, monkeypatch):

@@ -348,3 +348,32 @@ def test_model_reason_survives_into_the_plan(tmp_path, config, fake_model):
     assert plan.proposals[0].reason == "names a supplier and a billing month"
     move = json.loads(plan.to_json())["moves"][0]
     assert move["reason"] == "names a supplier and a billing month"
+
+
+@pytest.mark.parametrize("key", ["files", "decisions", "results"])
+def test_batch_parsing_survives_a_renamed_field(tmp_path, config, fake_model, key):
+    """Backends that ignore the schema rename the wrapper; follow anyway."""
+    root = tmp_path / "d"
+    root.mkdir()
+    (root / "scan.pdf").write_bytes(b"%PDF")
+    model = fake_model(
+        [json.dumps({key: [entry("scan.pdf", "Admin/Tax", "tax-2023.pdf", 0.9)]})]
+    )
+
+    plan = tidy.plan(root, config, model)
+
+    assert plan.proposals[0].decided_by == "model"
+    assert plan.proposals[0].category == "Admin/Tax"
+
+
+def test_an_empty_answer_is_not_an_error(tmp_path, config, fake_model):
+    """ "No opinion" is valid; the heuristic takes over, visibly."""
+    root = tmp_path / "d"
+    root.mkdir()
+    (root / "a-invoice.pdf").write_bytes(b"%PDF")
+    model = fake_model([json.dumps({"files": []})])
+
+    plan = tidy.plan(root, config, model)
+
+    assert plan.model_error is None
+    assert plan.proposals[0].decided_by == "heuristic"

@@ -175,16 +175,15 @@ def test_is_local(api, base_url, expected):
     assert ModelConfig(api=api, base_url=base_url).resolved().is_local is expected
 
 
-def test_hugging_face_without_a_token_is_unavailable(monkeypatch):
+def test_hugging_face_without_a_visible_token_still_tries(monkeypatch):
+    """A secrets proxy can inject the header, so we must not refuse early."""
     for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     model = LocalModel(ModelConfig(api="hf"))
 
+    # "no key here" is information, not a verdict.
     assert model.config.needs_token is True
-    assert model.available() is False
-    # And it says how to fix it, rather than failing somewhere deep in urllib.
-    with pytest.raises(ModelUnavailable, match="huggingface.co/settings/tokens"):
-        model.chat([{"role": "user", "content": "hi"}])
+    assert model.available() is True
 
 
 def test_hugging_face_with_a_token_skips_the_network_check(monkeypatch):
@@ -254,14 +253,13 @@ def test_cloud_reads_either_key_variable(monkeypatch, variable):
     assert ModelConfig(api="cloud").resolved().api_key == "ollama_pretend"
 
 
-def test_cloud_without_a_key_explains_itself(monkeypatch):
+def test_cloud_without_a_visible_key_still_tries(monkeypatch):
     for name in ("OLLAMA_API_KEY", "OLLAMA_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     model = LocalModel(ModelConfig(api="cloud"))
 
-    assert model.available() is False
-    with pytest.raises(ModelUnavailable, match="ollama.com/settings/keys"):
-        model.chat([{"role": "user", "content": "hi"}])
+    assert model.config.needs_token is True
+    assert model.available() is True
 
 
 def test_a_local_ollama_sends_no_token_by_default():
