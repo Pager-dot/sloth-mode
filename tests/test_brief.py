@@ -141,7 +141,7 @@ def test_summary_is_trimmed_to_the_configured_length(tmp_path, config, fake_mode
 
     result = brief.summarise([tmp_path], config, model)
 
-    assert result.summary == ["one."]
+    assert result.summary == ["One."]
 
 
 def test_string_action_items_are_accepted(tmp_path, config, fake_model):
@@ -155,7 +155,7 @@ def test_string_action_items_are_accepted(tmp_path, config, fake_model):
 
     result = brief.summarise([tmp_path], config, model)
 
-    assert result.summary == ["just a string"]
+    assert result.summary == ["Just a string."]
     assert result.action_items == [{"what": "call the venue"}]
 
 
@@ -198,7 +198,7 @@ def test_chunking_drives_one_call_per_chunk(tmp_path, config, fake_model):
 
     result = brief.summarise([tmp_path], config, model)
 
-    assert result.summary == ["done"]
+    assert result.summary == ["Done."]
     assert len(model.calls) == expected_chunks + 1
 
 
@@ -300,7 +300,7 @@ def test_map_step_survives_a_renamed_field(tmp_path, config, fake_model, payload
 
     assert result.used_model is True
     assert result.model_error is None
-    assert result.summary == ["it worked"]
+    assert result.summary == ["It worked."]
 
 
 def test_fenced_json_is_accepted(tmp_path, config, fake_model):
@@ -316,7 +316,7 @@ def test_fenced_json_is_accepted(tmp_path, config, fake_model):
     result = brief.summarise([tmp_path], config, model)
 
     assert result.used_model is True
-    assert result.summary == ["it worked"]
+    assert result.summary == ["It worked."]
 
 
 def test_a_useless_model_reply_is_reported_not_hidden(tmp_path, config, fake_model):
@@ -354,3 +354,105 @@ def test_no_model_configured_says_unavailable_not_failed(tmp_path, config):
 
     assert result.model_error is None
     assert "model unavailable" in result.ignorable
+
+
+# ---------------------------------------------------------------------------
+# "exactly two sentences" means exactly two sentences
+#
+# gpt-oss:120b, asked in the prompt for 2 sentences, returned one 60-word
+# run-on containing five clauses joined by commas. The prompt and the schema
+# both now state the count, but shape_summary is the part a model cannot
+# ignore.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,lines,expected",
+    [
+        # the gpt-oss failure: everything crammed into one string
+        (
+            ["The boiler is Thursday. Rent is short by 40. Slides are due EOD."],
+            2,
+            ["The boiler is Thursday.", "Rent is short by 40."],
+        ),
+        # already correct, left alone
+        (["One thing.", "Another thing."], 2, ["One thing.", "Another thing."]),
+        # a bare string, not an array
+        ("Only this happened.", 2, ["Only this happened."]),
+        # fewer sentences than asked for is fine; we do not invent news
+        (["Just one."], 2, ["Just one."]),
+        # too many sentences get trimmed to the budget
+        (["A. B. C. D."], 2, ["A.", "B."]),
+        # semicolons are run-ons too
+        (
+            ["The venue moved; the deposit is due Friday."],
+            2,
+            ["The venue moved.", "The deposit is due Friday."],
+        ),
+        # missing terminal punctuation is added, and the opener capitalised
+        (["no full stop here"], 1, ["No full stop here."]),
+        # ...but a lowercase brand name is not "corrected"
+        (["iPhone backups finished."], 1, ["iPhone backups finished."]),
+        # decimals must not be mistaken for sentence ends
+        (
+            ["The migration moved 2.1M rows overnight."],
+            1,
+            ["The migration moved 2.1M rows overnight."],
+        ),
+        ([], 2, []),
+        (None, 2, []),
+    ],
+)
+def test_shape_summary(raw, lines, expected):
+    assert brief.shape_summary(raw, lines) == expected
+
+
+def test_a_run_on_answer_is_split_into_the_requested_lines(tmp_path, config, fake_model):
+    write(tmp_path, "chat.txt", CHAT)
+    config.brief.summary_lines = 2
+    model = fake_model(
+        [
+            {"points": ["a"]},
+            {
+                # one string, three sentences: what gpt-oss actually does
+                "summary": [
+                    "The venue cancelled Saturday. The deposit is due Friday. "
+                    "Dev covers Thursday."
+                ],
+                "action_items": [],
+            },
+        ]
+    )
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert len(result.summary) == 2
+    assert result.summary == [
+        "The venue cancelled Saturday.",
+        "The deposit is due Friday.",
+    ]
+
+
+def test_the_schema_states_the_sentence_count(tmp_path, config, fake_model):
+    write(tmp_path, "chat.txt", CHAT)
+    config.brief.summary_lines = 3
+    model = fake_model([{"points": ["a"]}, {"summary": ["x."], "action_items": []}])
+
+    brief.summarise([tmp_path], config, model)
+
+    schema = model.calls[-1]["schema"]["properties"]["summary"]
+    assert schema["minItems"] == 3
+    assert schema["maxItems"] == 3
+    assert "never join them" in schema["description"]
+    # The shared template must not have been mutated by building that schema.
+    assert "minItems" not in brief.BRIEF_SCHEMA["properties"]["summary"]
+
+
+def test_the_heuristic_path_obeys_the_same_contract(tmp_path, config):
+    write(tmp_path, "chat.txt", CHAT)
+    config.brief.summary_lines = 2
+
+    result = brief.summarise([tmp_path], config, NullModel())
+
+    assert len(result.summary) <= 2
+    assert all(line.rstrip()[-1] in ".!?" for line in result.summary)

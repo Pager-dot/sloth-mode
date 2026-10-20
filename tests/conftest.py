@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from sloth.config import SlothConfig
-from sloth.model import parse_json
+from sloth.model import TOKEN_VARS, parse_json
 
 
 class FakeModel:
@@ -83,6 +83,20 @@ def fake_model() -> Callable[..., FakeModel]:
         return FakeModel(responses, **kwargs)
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_credentials(monkeypatch):
+    """Hide any real API keys from every test.
+
+    Without this the suite's result depends on who is running it: a developer
+    with OLLAMA_API_KEY exported gets different behaviour from CI, and a
+    failure message can print the key into a log. Tests that want a token set
+    their own.
+    """
+    for names in TOKEN_VARS.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
