@@ -307,3 +307,44 @@ def test_noop_proposals_are_not_actionable(tmp_path):
     assert proposal.is_noop(root)
     assert plan.actionable == []
     assert plan.by_category() == {}
+
+
+def test_system_prompt_names_every_field_it_wants(config):
+    """A backend may ignore `format`, so the prompt must carry the contract.
+
+    `reason` was declared in BATCH_SCHEMA but never mentioned in the prompt,
+    so on Ollama Cloud it came back empty on every row and `--json`
+    consumers got `"reason": ""` for the whole plan.
+    """
+    system = tidy._SYSTEM
+
+    for field_name in ("filename", "category", "new_name", "confidence", "reason"):
+        assert f'"{field_name}"' in system, f"{field_name} is never named"
+
+
+def test_model_reason_survives_into_the_plan(tmp_path, config, fake_model):
+    root = tmp_path / "Downloads"
+    root.mkdir()
+    (root / "ACME Invoice March 2024.pdf").write_bytes(b"%PDF fake")
+
+    model = fake_model(
+        [
+            {
+                "files": [
+                    {
+                        "filename": "ACME Invoice March 2024.pdf",
+                        "category": "Admin/Invoices",
+                        "new_name": "acme-invoice-2024-03.pdf",
+                        "confidence": 0.95,
+                        "reason": "names a supplier and a billing month",
+                    }
+                ]
+            }
+        ]
+    )
+
+    plan = tidy.plan(root, config, model)
+
+    assert plan.proposals[0].reason == "names a supplier and a billing month"
+    move = json.loads(plan.to_json())["moves"][0]
+    assert move["reason"] == "names a supplier and a billing month"

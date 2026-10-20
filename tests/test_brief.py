@@ -268,3 +268,151 @@ def test_render_without_color_has_no_escapes(tmp_path, config):
     rendered = brief.summarise([tmp_path], config, NullModel()).render()
 
     assert "\033[" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Backends that ignore the `format` schema
+#
+# Ollama Cloud disregards `format` on /api/chat, so the map and reduce steps
+# get whatever shape the model preferred. These are verbatim shapes from
+# gpt-oss:120b on examples/chats.
+# ---------------------------------------------------------------------------
+
+
+def test_map_step_reads_a_bare_list_of_objects(tmp_path, config, fake_model):
+    """The model answers with a list of objects, not {"points": [...]}.
+
+    The bullets must stay readable: feeding Python dict reprs into the
+    reduce step is how `{'task': 'Rent', 'details': '...'}` ends up quoted
+    inside a morning brief.
+    """
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model(
+        [
+            [
+                {"task": "Venue booking", "owner": "Tom", "notes": "confirm Sunday"},
+                {"task": "Deposit", "notes": "due Friday"},
+            ],
+            {"summary": ["ok."], "action_items": []},
+        ]
+    )
+
+    brief.summarise([tmp_path], config, model)
+
+    reduce_prompt = model.calls[-1]["messages"][-1]["content"]
+    assert "Venue booking" in reduce_prompt
+    assert "confirm Sunday" in reduce_prompt
+    assert "{'" not in reduce_prompt  # no Python reprs
+    assert "task:" in reduce_prompt
+
+
+def test_map_prompt_names_the_points_key(tmp_path, config, fake_model):
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([{"points": ["a"]}, {"summary": ["ok."], "action_items": []}])
+
+    brief.summarise([tmp_path], config, model)
+
+    assert "points" in model.calls[0]["messages"][0]["content"]
+
+
+def test_a_run_on_summary_string_is_split_into_the_asked_for_lines(
+    tmp_path, config, fake_model
+):
+    """`"summary"` comes back as one string holding several sentences.
+
+    Without splitting, the two-line brief renders as a single 70-word blob.
+    """
+    write(tmp_path, "chat.txt", CHAT)
+    config.brief.summary_lines = 2
+    model = fake_model(
+        [
+            {"points": ["a"]},
+            {
+                "summary": (
+                    "The boiler engineer is booked for Thursday 09:00-13:00. "
+                    "The client review moved to Friday at 14:00. "
+                    "Rent is short by $40."
+                ),
+                "action_items": [],
+            },
+        ]
+    )
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert len(result.summary) == 2
+    assert result.summary[0] == "The boiler engineer is booked for Thursday 09:00-13:00."
+    assert result.summary[1] == "The client review moved to Friday at 14:00."
+
+
+def test_reduce_prompt_asks_for_a_json_array_of_sentences(tmp_path, config, fake_model):
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([{"points": ["a"]}, {"summary": ["ok."], "action_items": []}])
+
+    brief.summarise([tmp_path], config, model)
+
+    system = model.calls[-1]["messages"][0]["content"].lower()
+    assert "array" in system
+
+
+# ---------------------------------------------------------------------------
+# Telling the truth about why the model was not used
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_model_is_reported_not_silently_swallowed(tmp_path, config, fake_model):
+    """A model that errors must not be described as "no model running".
+
+    `tidy` records `model_error` and the CLI warns. `brief` fell back to the
+    keyword pass and labelled the result as if no model had been configured,
+    which is indistinguishable from `--no-model` output.
+    """
+    from sloth.model import ModelOutputError
+
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([{"points": ["a"]}, ModelOutputError("reduce went wrong")])
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is False
+    assert result.model_error is not None
+    assert "reduce went wrong" in result.model_error
+    assert "no model running" not in result.ignorable
+
+
+def test_no_model_configured_leaves_model_error_unset(tmp_path, config):
+    write(tmp_path, "chat.txt", CHAT)
+
+    result = brief.summarise([tmp_path], config, NullModel())
+
+    assert result.used_model is False
+    assert result.model_error is None
+    assert "no model running" in result.ignorable
+
+
+def test_empty_map_output_is_recorded_as_an_error(tmp_path, config, fake_model):
+    """No bullets means the map step produced nothing usable; say so."""
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model([{"note": "nothing worth reporting"}])
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is False
+    assert result.model_error is not None
+    assert "no usable points" in result.model_error
+
+
+def test_map_step_accepts_the_models_own_name_for_the_array(tmp_path, config, fake_model):
+    """One key, one array: take it even if it is not called "points"."""
+    write(tmp_path, "chat.txt", CHAT)
+    model = fake_model(
+        [
+            {"bullets": ["deposit due friday"]},
+            {"summary": ["ok."], "action_items": []},
+        ]
+    )
+
+    result = brief.summarise([tmp_path], config, model)
+
+    assert result.used_model is True
+    assert "deposit due friday" in model.calls[-1]["messages"][-1]["content"]

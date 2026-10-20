@@ -267,3 +267,43 @@ def test_cloud_without_a_key_explains_itself(monkeypatch):
 def test_a_local_ollama_sends_no_token_by_default():
     assert ModelConfig().resolved().api_key == ""
     assert ModelConfig().resolved().needs_token is False
+
+
+# ---------------------------------------------------------------------------
+# Backends that ignore the `format` schema
+#
+# Ollama Cloud accepts `format` on /api/chat and then disregards it, so a
+# thinking model is free to narrate its whole plan as a run of JSON objects.
+# These are verbatim replies from gpt-oss:120b.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_json_takes_the_first_of_several_concatenated_objects():
+    raw = (
+        '{"thought":"Get file stats", "tool":"file_stat", "arguments":{}}'
+        '{"thought":"Read file start", "tool":"peek_contents", "arguments":{"chars":200}}'
+        '{"thought":"Decide", "tool":"finish", "arguments":{"category":"_Unsure"}}'
+    )
+    assert parse_json(raw) == {
+        "thought": "Get file stats",
+        "tool": "file_stat",
+        "arguments": {},
+    }
+
+
+def test_parse_json_ignores_prose_between_objects():
+    raw = (
+        '{"thought":"Get stats", "tool":"file_stat", "arguments":{}}'
+        "We need to see result.We need to wait for tool output."
+        '{"thought":"Read it", "tool":"peek_contents", "arguments":{"chars":200}}'
+    )
+    assert parse_json(raw)["tool"] == "file_stat"
+
+
+def test_parse_json_takes_the_first_of_concatenated_arrays():
+    assert parse_json('[{"a": 1}][{"b": 2}]') == [{"a": 1}]
+
+
+def test_parse_json_still_prefers_a_whole_document_over_a_prefix():
+    # The greedy scan must not truncate a single valid object.
+    assert parse_json('{"a": {"b": 1}, "c": 2}') == {"a": {"b": 1}, "c": 2}

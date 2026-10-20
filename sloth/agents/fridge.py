@@ -51,8 +51,13 @@ _SYSTEM = """\
 You are looking at a photo of the inside of someone's fridge or pantry.
 List only food and drink you can actually see. Use plain singular grocery
 words ("milk", "eggs", "spinach"), not brand names or descriptions.
-If a container is visibly nearly empty, say so in "state".
-Do not guess at items hidden behind others. JSON only.
+Do not guess at items hidden behind others.
+
+Reply with one JSON object and nothing else:
+{"items": [{"name": "milk", "quantity": "1 carton", "state": "low"}]}
+Every entry needs "name". "quantity" and "state" are optional; "state" is
+one of plenty, low, nearly empty, unclear — say so only if the container is
+visibly nearly empty.
 """
 
 
@@ -154,6 +159,20 @@ def build_list(
     return result
 
 
+#: What a model calls the one field it was asked for, when nothing makes it
+#: say "name". gemma4:31b on Ollama Cloud prefers "item".
+_NAME_KEYS = ("name", "item", "food", "label", "product", "title")
+
+
+def _item_name(entry: dict) -> str:
+    """The grocery word in ``entry``, whatever key it arrived under."""
+    for key in _NAME_KEYS:
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def _parse_items(raw: Any) -> list[Item]:
     items: list[Item] = []
     seen_names: set[str] = set()
@@ -162,7 +181,7 @@ def _parse_items(raw: Any) -> list[Item]:
             entry = {"name": entry}
         if not isinstance(entry, dict):
             continue
-        name = normalise_name(str(entry.get("name") or ""))
+        name = normalise_name(_item_name(entry))
         if not name or name in seen_names:
             continue
         seen_names.add(name)

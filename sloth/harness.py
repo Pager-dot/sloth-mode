@@ -44,6 +44,23 @@ class Tool:
             "parameters": self.parameters,
         }
 
+    def accepted(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep only the arguments this tool actually declares.
+
+        A model that is not held to a schema fills in whatever argument name
+        reads well — ``peek_contents(filename=..., chars=...)`` when only
+        ``chars`` exists. The declared properties are the tool's interface,
+        so anything outside them is noise, and dropping it costs the agent a
+        wrong guess rather than a whole step spent on a TypeError.
+
+        A tool that declares no ``properties`` at all has no interface to
+        check against, so its arguments pass through untouched.
+        """
+        properties = self.parameters.get("properties")
+        if properties is None:
+            return dict(arguments)
+        return {k: v for k, v in arguments.items() if k in properties}
+
 
 class ToolRegistry:
     """A named collection of tools, with a prompt-ready description."""
@@ -138,7 +155,11 @@ Tools:
 
 Rules:
 - Reply with JSON only: {{"thought": "...", "tool": "...", "arguments": {{...}}}}
+- Exactly ONE JSON object per reply, and nothing after it. Do not plan ahead
+  or write out several turns at once: you have not seen the tool result yet.
 - One tool per reply. Keep "thought" under 20 words.
+- Pass only the arguments listed for that tool. A tool with no arguments
+  takes {{}}.
 - Call finish as soon as you can answer. Do not explore for its own sake.
 - Never invent tool results. If a tool errors, adapt or finish.
 
@@ -203,6 +224,34 @@ def run_agent(
             note=str(turn.get("thought") or "")[:200],
         )
 
+        if not name:
+            # Asked to end with an object, a model often just hands the
+            # object over instead of wrapping it in finish(). Taking it is
+            # better than looping until max_steps and returning nothing.
+            answer = {
+                k: v for k, v in turn.items() if k not in ("thought", "tool", "arguments")
+            }
+            if answer:
+                step.tool = "finish"
+                step.result = answer
+                run.steps.append(step)
+                if on_step:
+                    on_step(step)
+                run.answer = answer
+                run.stopped_because = "done"
+                return run
+            messages.append({"role": "assistant", "content": raw})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        'Name a tool: {"tool": "...", "arguments": {...}}, '
+                        "or finish with your answer."
+                    ),
+                }
+            )
+            continue
+
         if name in ("finish", "final_answer", "done"):
             step.result = arguments.get("answer", arguments or None)
             run.steps.append(step)
@@ -216,6 +265,7 @@ def run_agent(
             tool = tools.get(name)
             if not tool.read_only and not allow_writes:
                 raise PermissionError(f"{name} may not run in read-only mode")
+            step.arguments = tool.accepted(step.arguments)
             step.result = tool.run(**step.arguments)
         except Exception as exc:  # tools are user code; surface, don't crash
             step.error = f"{type(exc).__name__}: {exc}"

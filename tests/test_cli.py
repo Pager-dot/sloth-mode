@@ -272,3 +272,47 @@ def test_doctor_explains_a_missing_ollama_cloud_key(monkeypatch, capsys):
     assert "no token" in out
     assert "ollama.com/settings/keys" in out
     assert "prompts are sent to https://ollama.com" in out
+
+
+def test_brief_warns_when_the_model_failed(tmp_path, capsys, monkeypatch):
+    """A failed model is a warning, not silence dressed up as --no-model."""
+    from sloth.agents import brief as brief_agent
+
+    (tmp_path / "chat.txt").write_text(
+        "Priya: can you confirm the booking tomorrow morning please\n"
+    )
+
+    real = brief_agent.summarise
+
+    def failing(paths, config, model, **kwargs):
+        result = real(paths, config, model, **kwargs)
+        result.model_error = "ollama.com returned HTTP 500"
+        return result
+
+    monkeypatch.setattr(brief_agent, "summarise", failing)
+    code = main(["--no-model", "brief", str(tmp_path)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "ollama.com returned HTTP 500" in captured.err
+    assert "no model used" in captured.err
+
+
+def test_brief_markdown_stays_clean_when_the_model_failed(tmp_path, capsys, monkeypatch):
+    """The warning goes to stderr; stdout stays a pure document."""
+    from sloth.agents import brief as brief_agent
+
+    (tmp_path / "chat.txt").write_text("Ada: the deployment finished\n")
+    real = brief_agent.summarise
+
+    def failing(paths, config, model, **kwargs):
+        result = real(paths, config, model, **kwargs)
+        result.model_error = "boom"
+        return result
+
+    monkeypatch.setattr(brief_agent, "summarise", failing)
+    main(["--no-model", "brief", str(tmp_path), "--markdown"])
+
+    captured = capsys.readouterr()
+    assert captured.out.startswith("# Morning brief")
+    assert "boom" in captured.err

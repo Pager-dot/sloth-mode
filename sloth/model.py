@@ -437,7 +437,16 @@ def _attach_images(
 def parse_json(raw: str) -> Any:
     """Parse JSON from a model, tolerating fences and surrounding chatter.
 
-    Schema-constrained output usually makes this unnecessary. Usually.
+    Schema-constrained output usually makes this unnecessary. Usually: a
+    hosted backend may accept a ``format`` schema and then ignore it, which
+    puts us back to reading whatever the model felt like writing.
+
+    Returns the *first* complete JSON value in ``raw``. A model left
+    unconstrained tends to narrate around the answer, and a thinking model
+    asked to drive a tool loop will happily write out its whole planned
+    trajectory as one object after another — ``{...}{...}{...}``. The first
+    value is the only one it has actually committed to, since the rest were
+    written before it saw any tool output.
     """
     text = (raw or "").strip()
     if text.startswith("```"):
@@ -451,12 +460,13 @@ def parse_json(raw: str) -> Any:
     except json.JSONDecodeError:
         pass
 
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = text.find(opener)
-        end = text.rfind(closer)
-        if start != -1 and end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                continue
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            # raw_decode stops at the end of one value and ignores the rest.
+            return decoder.raw_decode(text, index)[0]
+        except json.JSONDecodeError:
+            continue
     raise ModelOutputError(f"model did not return JSON: {str(raw)[:300]!r}")

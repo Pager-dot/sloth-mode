@@ -67,8 +67,12 @@ Rules:
   name is already clear, repeat it unchanged.
 - "confidence" is 0.0-1.0. Be honest: use below 0.5 when the filename alone
   could mean several things. Guessing wrong costs more than saying unsure.
+- "reason" is a short clause saying what in the name or excerpt decided it.
 - Return one entry per input file, with "filename" matching the input exactly.
-- JSON only.
+
+Reply with one JSON object and nothing else:
+{"files": [{"filename": "...", "category": "...", "new_name": "...",
+            "confidence": 0.0, "reason": "..."}]}
 """
 
 

@@ -69,18 +69,28 @@ _MAP_SYSTEM = """\
 You condense chat logs. Extract only what a busy person would need tomorrow:
 decisions, questions aimed at them, deadlines, plans with a time attached.
 Drop greetings, jokes, reactions, and link-dumps with no comment.
-Be specific: names, times, numbers. JSON only, at most 4 bullets.
+Be specific: names, times, numbers.
+
+Reply with one JSON object and nothing else:
+{"points": ["...", "..."]}
+"points" is an array of at most 4 plain sentences. Not objects, not nested
+lists, and no other top-level key.
 """
 
 _REDUCE_SYSTEM = """\
 You write a morning brief for someone who slept while all of this happened.
 Given bullets extracted from overnight messages, write:
-- "summary": exactly {lines} sentence(s), plain and concrete, no preamble,
-  no "the group discussed" filler. Lead with what changed.
-- "action_items": at most {max_items} things that need THIS person. Skip
+- "summary": a JSON array of exactly {lines} string(s), one sentence each.
+  An array of {lines}, not one string holding {lines} sentences. Plain and
+  concrete, no preamble, no "the group discussed" filler. Lead with what
+  changed.
+- "action_items": a JSON array of at most {max_items} objects
+  {{"what": "...", "who_asked": "..."}}, things that need THIS person. Skip
   anything already handled by someone else.
 - "ignorable": one clause naming what was just noise.
-JSON only.
+
+Reply with one JSON object and nothing else:
+{{"summary": [...], "action_items": [...], "ignorable": "..."}}
 """
 
 
@@ -102,6 +112,9 @@ class Brief:
     ignorable: str = ""
     sources: list[Source] = field(default_factory=list)
     used_model: bool = False
+    #: Why the model was not used, when one was configured but did not work.
+    #: ``None`` means no model was asked for in the first place.
+    model_error: str | None = None
     generated_at: datetime = field(default_factory=datetime.now)
 
     @property
@@ -300,11 +313,16 @@ def summarise(
                 brief.ignorable = reduced["ignorable"]
                 brief.used_model = True
                 return brief
-        except (ModelUnavailable, ModelOutputError):
-            pass  # fall through to extractive summarising
+            brief.model_error = "the model returned no usable points"
+        except (ModelUnavailable, ModelOutputError) as exc:
+            # Falling back is fine; pretending no model was configured is
+            # not. The caller needs to be able to tell the two apart.
+            brief.model_error = str(exc)
 
     brief.summary, brief.action_items = _extractive(combined, settings)
-    brief.ignorable = "everything the keyword pass could not rank (no model running)"
+    brief.ignorable = "everything the keyword pass could not rank" + (
+        " (model unavailable)" if brief.model_error else " (no model running)"
+    )
     return brief
 
 
@@ -323,11 +341,38 @@ def _map_chunks(model: Model, chunks: Sequence[str]) -> list[str]:
         )
         payload = parse_json(raw)
         if isinstance(payload, dict):
-            payload = payload.get("points", [])
+            # Unschema'd, the model may pick its own name for the one array
+            # it was asked for; take it rather than losing the whole chunk.
+            payload = payload.get("points") or _only_list(payload)
         if isinstance(payload, list):
-            points.extend(str(p).strip() for p in payload if str(p).strip())
+            points.extend(b for b in (_as_bullet(p) for p in payload) if b)
     # Chat threads repeat themselves; the reduce step should not have to.
     return _dedupe(points)
+
+
+def _only_list(payload: dict) -> list:
+    """The single list in a one-key object, if that is what we were given."""
+    lists = [v for v in payload.values() if isinstance(v, list)]
+    return lists[0] if len(lists) == 1 else []
+
+
+def _as_bullet(value: Any) -> str:
+    """Render one map-step item as a sentence a reduce step can read.
+
+    gpt-oss:120b answers with objects — ``{"task": ..., "notes": ...}`` —
+    where a string was asked for. ``str(dict)`` would paste a Python repr,
+    quotes and unicode escapes included, into the morning brief.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        parts = [
+            f"{key}: {str(item).strip()}"
+            for key, item in value.items()
+            if isinstance(item, str | int | float) and str(item).strip()
+        ]
+        return "; ".join(parts)
+    return str(value).strip()
 
 
 def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict:
@@ -347,7 +392,10 @@ def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict
 
     summary = payload.get("summary")
     if isinstance(summary, str):
-        summary = [summary]
+        # Asked for an array of N sentences, an unschema'd model tends to
+        # return one string holding all N. Split it back out, or the
+        # two-line brief arrives as a single run-on line.
+        summary = _sentences(summary)
     summary = [str(s).strip() for s in (summary or []) if str(s).strip()]
 
     items: list[dict[str, str]] = []
@@ -367,6 +415,12 @@ def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict
         "action_items": items[: settings.max_action_items],
         "ignorable": str(payload.get("ignorable") or "").strip(),
     }
+
+
+def _sentences(text: str) -> list[str]:
+    """Split a paragraph into sentences, keeping their terminators."""
+    parts = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip())]
+    return [s for s in parts if s]
 
 
 _STOPWORDS = frozenset(

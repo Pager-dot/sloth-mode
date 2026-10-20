@@ -356,6 +356,10 @@ def cmd_brief(args: argparse.Namespace) -> int:
         out.always("")
         out.always(result.render(color=out.color))
 
+    if result.model_error:
+        # Warn on stderr, so --markdown stdout stays a pure document.
+        out.warn(f"no model used: {result.model_error}")
+
     if args.save:
         config.brief_dir.mkdir(parents=True, exist_ok=True)
         stamp = result.generated_at.strftime("%Y-%m-%d-%H%M")

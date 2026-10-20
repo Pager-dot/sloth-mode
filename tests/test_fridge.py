@@ -158,3 +158,59 @@ def test_nothing_needed_says_so(photo, config, fake_model):
     assert result.missing == []
     assert "Go back to the sofa" in result.render()
     assert "- [x] Nothing needed" in result.to_markdown()
+
+
+# ---------------------------------------------------------------------------
+# Backends that ignore the `format` schema
+# ---------------------------------------------------------------------------
+
+
+def test_items_keyed_by_item_instead_of_name_are_still_seen(tmp_path, config, fake_model):
+    """gemma4:31b on Ollama Cloud answers [{"item": "milk"}, ...].
+
+    SEEN_SCHEMA requires "name", but the backend ignores `format`, so every
+    item was dropped and the shopping list told you to buy the milk that was
+    sitting in the photo.
+    """
+    photo = tmp_path / "fridge.png"
+    photo.write_bytes(b"\x89PNG fake")
+    model = fake_model([[{"item": "milk"}, {"item": "eggs"}, {"item": "butter"}]])
+
+    result = fridge.build_list([photo], config, model)
+
+    assert [i.name for i in result.seen] == ["butter", "eggs", "milk"]
+    for bought in ("milk", "eggs", "butter"):
+        assert bought not in result.missing
+
+
+def test_other_common_name_keys_are_accepted(tmp_path, config, fake_model):
+    photo = tmp_path / "fridge.png"
+    photo.write_bytes(b"\x89PNG fake")
+    model = fake_model(
+        [{"items": [{"food": "milk"}, {"label": "eggs"}, {"product": "bread"}]}]
+    )
+
+    result = fridge.build_list([photo], config, model)
+
+    assert [i.name for i in result.seen] == ["bread", "eggs", "milk"]
+
+
+def test_name_still_wins_when_several_keys_are_present(tmp_path, config, fake_model):
+    photo = tmp_path / "fridge.png"
+    photo.write_bytes(b"\x89PNG fake")
+    model = fake_model([{"items": [{"name": "milk", "item": "carton"}]}])
+
+    result = fridge.build_list([photo], config, model)
+
+    assert [i.name for i in result.seen] == ["milk"]
+
+
+def test_vision_prompt_names_the_json_shape(tmp_path, config, fake_model):
+    photo = tmp_path / "fridge.png"
+    photo.write_bytes(b"\x89PNG fake")
+    model = fake_model([{"items": []}])
+
+    fridge.build_list([photo], config, model)
+
+    system = model.calls[0]["messages"][0]["content"]
+    assert '"items"' in system and '"name"' in system
