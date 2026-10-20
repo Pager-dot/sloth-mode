@@ -251,7 +251,7 @@ Three things worth knowing about how it is wired:
                                       ▼
                   ┌──────────────────────────────────────────┐
                   │  LocalModel  (Ollama | OpenAI-compatible) │
-                  │  JSON-schema-constrained decoding         │
+                  │  schema + shape-in-prompt, then verify    │
                   └───────────────────┬──────────────────────┘
                                       │
                       ┌───────────────┴───────────────┐
@@ -275,10 +275,15 @@ Three things worth knowing about how it is wired:
 
 Four design decisions worth knowing about:
 
-**Small models are fine if you constrain them.** Every call ships a JSON
-schema (Ollama's `format`, or `response_format` on OpenAI-compatible servers),
-so a 4B model answers in the shape we asked for instead of writing an essay
-about how it would be happy to help.
+**A JSON schema is a request, not a guarantee.** Every call ships one
+(Ollama's `format`, `response_format` on OpenAI-compatible servers) and every
+prompt also spells out the shape in words, because some backends ignore the
+schema completely. Measured, not assumed: Ollama Cloud returns plain prose for
+a request carrying a schema that demands `{"ok": boolean}` — for
+`gpt-oss:120b` as much as for `gemma4:31b`. So the parsing is defensive by
+design. It accepts the field under another name, unwraps markdown fences,
+takes the first complete JSON value when a model streams three objects in one
+reply, and reshapes a run-on into the sentence count that was asked for.
 
 **The model is never trusted.** It can only choose from your configured
 taxonomy — invent `Vibes/Whatever` and the answer is discarded. It cannot
