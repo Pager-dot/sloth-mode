@@ -1,9 +1,9 @@
 """The fridge agent: photo in, grocery list out.
 
 Open the fridge, take one photo, close the fridge. A local vision model
-(``qwen2.5vl``, ``llava``, ``moondream`` — whatever you pulled) names what it
-can see; we subtract that from the list of things a working kitchen needs and
-print what is missing.
+(Gemma 3 at 4B and up, or ``qwen2.5vl``, ``llava``, ``moondream`` — whatever
+you pulled) names what it can see; we subtract that from the list of things a
+working kitchen needs and print what is missing.
 
 This agent is the one place that genuinely needs a model: there is no honest
 keyword fallback for "what is in this photograph", so if no vision model is
@@ -124,8 +124,9 @@ def build_list(
 
     if not model.available():
         raise ModelUnavailable(
-            "the fridge agent needs a local vision model. Try:\n"
-            "  ollama pull qwen2.5vl:3b\n"
+            "the fridge agent needs a vision model. Try either:\n"
+            "  ollama pull gemma3:4b      (local, ~3 GB, also does the text work)\n"
+            "  sloth --api hf fridge ...  (hosted Gemma, needs a free HF_TOKEN)\n"
             "There is no honest way to guess what is in a photo without one."
         )
 

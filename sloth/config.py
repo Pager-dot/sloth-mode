@@ -6,8 +6,9 @@ If you do want one, it lives at ``~/.config/sloth/config.toml`` (or
 .. code-block:: toml
 
     [model]
-    name = "qwen3:4b"
+    name = "gemma3:12b"            # or "gemma3:1b" on a small laptop
     base_url = "http://127.0.0.1:11434"
+    # api = "hf"                   # hosted Gemma instead, needs HF_TOKEN
 
     [tidy]
     confidence_threshold = 0.7

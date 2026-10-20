@@ -14,7 +14,7 @@
 
 **Local, open-weight AI for the chores you keep putting off.**
 
-Zero dependencies. No API keys. Nothing leaves your machine.
+Zero dependencies. Runs on Gemma. Local by default.
 
 [Why](#why) · [Install](#install) · [The three agents](#the-three-agents) · [How it works](#how-it-works) · [Config](#config) · [Safety](#the-undo-guarantee)
 
@@ -39,8 +39,9 @@ engine:
 
 | Open piece | What it does here |
 | --- | --- |
-| **Open-weight models** (Llama 3.2, Qwen 3, Qwen2.5-VL, Gemma, Mistral…) | every decision the tool makes |
+| **Gemma 3** (and any other open weights: Qwen, Llama, Mistral, Phi…) | every decision the tool makes |
 | **Ollama** / **llama.cpp** / **vLLM** / **LM Studio** | local inference, your choice of server |
+| **Hugging Face Inference Providers** | the same open weights, free tier, nothing to install |
 | **Schema-constrained decoding** | what makes a 3B model reliable enough to trust with your files |
 | **A ~200-line agent harness** ([`sloth/harness.py`](sloth/harness.py)) | bounded tool-calling loop, read-only by default |
 | **The Python standard library** | literally the only dependency |
@@ -53,23 +54,49 @@ cd sloth-mode
 pip install -e .
 ```
 
-Then get a model. Anything small works; these are good defaults:
+Then pick where the weights run. Three options, same open models:
+
+### Local, with Ollama (the default)
 
 ```bash
-ollama pull llama3.2:3b     # the text model (~2 GB)
-ollama pull qwen2.5vl:3b    # only needed for `sloth fridge`
-sloth doctor                # check it can all see each other
+ollama pull gemma3:4b   # ~3 GB, and it is multimodal, so `fridge` works too
+sloth doctor            # check everything can see everything
+sloth tidy ~/Downloads
 ```
 
-No Ollama? Point it at any OpenAI-compatible local server instead:
+`gemma3:1b` runs on almost anything if 4B is too heavy (text only).
+`gemma3:12b` is noticeably better at odd filenames if you have the RAM.
+
+### Local, with your own server
+
+Any OpenAI-compatible server — `llama.cpp --server`, vLLM, LM Studio:
 
 ```bash
 sloth --api openai --base-url http://127.0.0.1:8080 tidy ~/Downloads
 ```
 
-**No model at all?** Everything except `fridge` still works — the agents fall
-back to keyword and extension heuristics. Try the whole thing without pulling
-a single weight:
+### Free and hosted, no download
+
+Don't want to install a model, or don't have the disk? Hugging Face's
+Inference Providers run Gemma for you and have a free tier. Grab a token
+(read access is enough) from
+[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens):
+
+```bash
+export HF_TOKEN=hf_...
+sloth --api hf tidy ~/Downloads
+sloth --api hf fridge fridge.jpg      # borrowed eyes, no 3 GB download
+```
+
+Same open weights (`google/gemma-3-4b-it`), and the only line of config is the
+flag. The honest trade: **this one sends your prompts over the network**, so
+filenames and text excerpts leave your machine. `sloth doctor` says so in
+yellow every time, and the two local backends never do it.
+
+### No model at all
+
+Everything except `fridge` still works — the agents fall back to keyword and
+extension heuristics. Try the whole thing without pulling a single weight:
 
 ```bash
 make demo
@@ -205,7 +232,7 @@ Four design decisions worth knowing about:
 
 **Small models are fine if you constrain them.** Every call ships a JSON
 schema (Ollama's `format`, or `response_format` on OpenAI-compatible servers),
-so a 3B model answers in the shape we asked for instead of writing an essay
+so a 4B model answers in the shape we asked for instead of writing an essay
 about how it would be happy to help.
 
 **The model is never trusted.** It can only choose from your configured
@@ -229,8 +256,9 @@ works on a stranger's laptop. To override, write
 
 ```toml
 [model]
-name = "qwen3:4b"
+name = "gemma3:12b"          # or "gemma3:1b" on a small laptop
 base_url = "http://127.0.0.1:11434"
+# api = "hf"                 # hosted Gemma instead; reads HF_TOKEN
 
 [tidy]
 confidence_threshold = 0.7
@@ -263,21 +291,34 @@ it walks back two batches. `sloth history` lists them all.
 
 ## Privacy
 
-There is no cloud. `LocalModel` builds its HTTP opener with proxies explicitly
-disabled, so a misconfigured `HTTPS_PROXY` cannot quietly ship your invoices
-somewhere. The only network traffic is to the model server you started, and
-the whole tool works with the Wi-Fi off.
+On the two local backends there is no cloud: `LocalModel` builds its HTTP
+opener with proxies explicitly disabled, so a misconfigured `HTTPS_PROXY`
+cannot quietly ship your invoices somewhere. The only traffic is to the
+server you started, and the whole tool works with the Wi-Fi off.
+
+`--api hf` is the exception, and it is opt-in. It sends prompts — filenames,
+text excerpts, the fridge photo — to Hugging Face, so it uses your normal
+proxy settings like any other HTTPS client. `sloth doctor` prints which of
+the two you are on:
+
+```console
+privacy         stays on this machine
+privacy         prompts are sent to https://router.huggingface.co/v1
+```
+
+If that matters for a particular folder, `sloth --no-model tidy` gets you the
+heuristic pass with no model and no network at all.
 
 ## Development
 
 ```bash
 make install   # editable install plus pytest and ruff
-make test      # 137 tests, no model server required
+make test      # 163 tests, no model server required
 make lint      # ruff check + format check
 make demo      # tidy and brief the example data, heuristics only
 ```
 
-Tests never start a model: `tests/conftest.py` has a `FakeModel` that replays
+Tests never start a model or touch the network: `tests/conftest.py` has a `FakeModel` that replays
 canned responses and records what it was asked, which is how the prompts and
 the validation layer are tested at all.
 

@@ -1,34 +1,78 @@
-"""Access to a locally hosted open-weight model.
+"""Access to an open-weight model, wherever you keep it.
 
-Two backends, both of which you run yourself:
+Three backends. The first two run on your own machine; the third is for people
+who want Gemma without installing anything.
 
 ``ollama``
     The default. Talks to ``/api/chat`` on http://127.0.0.1:11434 and uses
     Ollama's ``format`` field to constrain output to a JSON schema, which is
-    what makes 3B-parameter models usable for structured work.
+    what makes 4B-parameter models usable for structured work. Default model:
+    ``gemma3:4b``, which handles both text and images.
 
 ``openai``
-    Any OpenAI-compatible local server: ``llama.cpp --server``, vLLM,
+    Any OpenAI-compatible server you run: ``llama.cpp --server``, vLLM,
     LM Studio, text-generation-webui. Uses ``/v1/chat/completions`` and
     ``response_format`` for schema constraints.
 
-No SDKs, no API keys, no network egress beyond your own machine.
+``huggingface``
+    Hugging Face Inference Providers, which is OpenAI-compatible and has a
+    free tier. Runs ``google/gemma-3-4b-it`` without a GPU or a download —
+    you need a free token in ``HF_TOKEN``. This one *does* send your prompts
+    over the network, which is the trade for not hosting anything.
+
+Same open weights either way. No SDKs: just the standard library.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+#: Per-backend defaults, applied to any field left empty.
+API_DEFAULTS: dict[str, dict[str, str]] = {
+    "ollama": {
+        "base_url": "http://127.0.0.1:11434",
+        # Gemma 3 at 4B is multimodal, so one pull covers every agent.
+        # `gemma3:1b` is text-only but runs on almost anything.
+        "name": "gemma3:4b",
+        "vision_name": "gemma3:4b",
+    },
+    "openai": {
+        "base_url": "http://127.0.0.1:8080",
+        "name": "local-model",
+        "vision_name": "local-model",
+    },
+    "huggingface": {
+        "base_url": "https://router.huggingface.co/v1",
+        "name": "google/gemma-3-4b-it",
+        "vision_name": "google/gemma-3-4b-it",
+    },
+}
+
+#: ``--api hf`` is a lot less to type.
+API_ALIASES = {"hf": "huggingface", "openai-compatible": "openai", "llamacpp": "openai"}
+
+#: Where a Hugging Face token might be hiding. All are conventional names.
+HF_TOKEN_VARS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN")
+
+HF_TOKEN_HELP = (
+    "set HF_TOKEN to use Hugging Face. A free account gives you one at "
+    "https://huggingface.co/settings/tokens (read access is enough). "
+    "Prefer to keep everything on your own machine? "
+    "`ollama pull gemma3:4b` and drop the --api flag."
+)
+
 
 class ModelUnavailable(RuntimeError):
-    """Raised when the local model server cannot be reached or used."""
+    """Raised when the model backend cannot be reached or used."""
 
 
 class ModelOutputError(RuntimeError):
@@ -37,24 +81,61 @@ class ModelOutputError(RuntimeError):
 
 @dataclass
 class ModelConfig:
-    """Which local model to use, and how patiently to wait for it."""
+    """Which model to use, where it lives, and how patiently to wait for it.
+
+    Every field may be left empty: :meth:`resolved` fills in whatever the
+    chosen backend's defaults are, so ``--api hf`` alone is a working config.
+    """
 
     #: Text model. Small is fine; the prompts here are deliberately tiny.
-    name: str = "llama3.2:3b"
+    name: str = ""
     #: Vision model, used only by the fridge agent.
-    vision_name: str = "qwen2.5vl:3b"
-    base_url: str = "http://127.0.0.1:11434"
-    #: ``"ollama"`` or ``"openai"``.
+    vision_name: str = ""
+    base_url: str = ""
+    #: ``"ollama"``, ``"openai"``, or ``"huggingface"``.
     api: str = "ollama"
     temperature: float = 0.0
     timeout: float = 180.0
     num_ctx: int = 8192
-    #: Only used by the ``openai`` backend; most local servers ignore it.
-    api_key: str = "local"
+    #: Bearer token. Ignored by Ollama; local servers usually ignore it too.
+    api_key: str = ""
 
     def with_overrides(self, **kwargs: Any) -> ModelConfig:
         data = {**self.__dict__, **{k: v for k, v in kwargs.items() if v is not None}}
         return ModelConfig(**data)
+
+    def resolved(self) -> ModelConfig:
+        """Return a copy with backend defaults and tokens filled in."""
+        api = API_ALIASES.get(self.api.strip().lower(), self.api.strip().lower())
+        if api not in API_DEFAULTS:
+            raise ValueError(
+                f"unknown backend {self.api!r}; try one of: "
+                f"{', '.join(sorted(API_DEFAULTS))}"
+            )
+        defaults = API_DEFAULTS[api]
+        key = self.api_key
+        if api == "huggingface" and not key:
+            key = next((os.environ[v] for v in HF_TOKEN_VARS if os.environ.get(v)), "")
+        return replace(
+            self,
+            api=api,
+            base_url=self.base_url or defaults["base_url"],
+            name=self.name or defaults["name"],
+            vision_name=self.vision_name or defaults["vision_name"],
+            api_key=key,
+        )
+
+    @property
+    def is_local(self) -> bool:
+        """True if requests stay on this machine."""
+        if self.api == "huggingface":
+            return False
+        host = urllib.parse.urlsplit(self.base_url or "").hostname or ""
+        return host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "")
+
+    @property
+    def needs_token(self) -> bool:
+        return self.api == "huggingface" and not self.api_key
 
 
 @runtime_checkable
@@ -74,42 +155,70 @@ class Model(Protocol):
 
 
 class LocalModel:
-    """A thin client for a model running on your own machine."""
+    """A thin client for an open-weight model, local by default."""
 
     def __init__(self, config: ModelConfig | None = None) -> None:
-        self.config = config or ModelConfig()
+        self.config = (config or ModelConfig()).resolved()
 
     # -- plumbing ---------------------------------------------------------
 
     def _request(self, path: str, payload: Mapping[str, Any] | None) -> Any:
-        url = self.config.base_url.rstrip("/") + path
+        config = self.config
+        if config.needs_token:
+            raise ModelUnavailable(HF_TOKEN_HELP)
+
+        url = config.base_url.rstrip("/") + path
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Content-Type": "application/json"}
-        if self.config.api == "openai":
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        if config.api != "ollama" and config.api_key:
+            headers["Authorization"] = f"Bearer {config.api_key}"
         request = urllib.request.Request(
             url, data=data, headers=headers, method="POST" if data else "GET"
         )
         try:
-            # Local server only; no proxy, and no outbound traffic.
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(request, timeout=self.config.timeout) as response:
+            if config.is_local:
+                # Your own machine: ignore any proxy configuration, so a
+                # stray HTTPS_PROXY cannot route your files somewhere else.
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            else:
+                opener = urllib.request.build_opener()
+            with opener.open(request, timeout=config.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:  # pragma: no cover - needs a server
+        except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
+            if exc.code in (401, 403) and config.api == "huggingface":
+                raise ModelUnavailable(
+                    f"Hugging Face rejected the token (HTTP {exc.code}). {detail}"
+                ) from exc
             raise ModelUnavailable(f"{url} returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise ModelUnavailable(
-                f"could not reach a local model at {self.config.base_url} ({exc}). "
-                "Is `ollama serve` running?"
-            ) from exc
+            raise ModelUnavailable(self._unreachable_message(exc)) from exc
         except json.JSONDecodeError as exc:  # pragma: no cover - needs a server
             raise ModelUnavailable(f"{url} did not return JSON: {exc}") from exc
+
+    def _unreachable_message(self, exc: Exception) -> str:
+        where = self.config.base_url
+        if self.config.api == "ollama":
+            hint = "Is `ollama serve` running?"
+        elif self.config.api == "huggingface":
+            hint = "Is this machine online?"
+        else:
+            hint = "Is your local server running?"
+        kind = "a local model" if self.config.is_local else "the model API"
+        return f"could not reach {kind} at {where} ({exc}). {hint}"
 
     # -- capability checks ------------------------------------------------
 
     def available(self) -> bool:
-        """True if the server answers and has at least one model pulled."""
+        """True if this backend looks usable right now.
+
+        For a hosted backend that means "we have a token": listing models over
+        the network on every run would make the agents feel slow, and a real
+        failure still surfaces at the first call, where the agents handle it
+        by falling back to heuristics.
+        """
+        if self.config.api == "huggingface":
+            return not self.config.needs_token
         try:
             self.list_models()
         except ModelUnavailable:
@@ -117,7 +226,7 @@ class LocalModel:
         return True
 
     def list_models(self) -> list[str]:
-        """Names of the models the local server has on disk."""
+        """Model names the backend is offering."""
         if self.config.api == "ollama":
             payload = self._request("/api/tags", None)
             return sorted(m.get("name", "") for m in payload.get("models", []))
@@ -125,7 +234,7 @@ class LocalModel:
         return sorted(m.get("id", "") for m in payload.get("data", []))
 
     def has_model(self, name: str) -> bool:
-        """True if ``name`` is pulled, matching ``llama3.2`` to ``llama3.2:3b``."""
+        """True if ``name`` is available, matching ``gemma3`` to ``gemma3:4b``."""
         try:
             installed = self.list_models()
         except ModelUnavailable:

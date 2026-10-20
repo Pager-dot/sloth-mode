@@ -20,7 +20,7 @@ from .agents import fridge as fridge_agent
 from .agents import tidy as tidy_agent
 from .config import SlothConfig, default_config_path, load_config
 from .journal import Journal
-from .model import LocalModel, Model, ModelUnavailable, NullModel
+from .model import HF_TOKEN_HELP, LocalModel, Model, ModelUnavailable, NullModel
 
 SLOTH = r"""
       (
@@ -98,18 +98,24 @@ def parse_duration(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sloth",
-        description="Local open-weight AI that does the chores you keep postponing.",
-        epilog="Nothing leaves your machine. Nothing moves without --apply.",
+        description="Open-weight AI that does the chores you keep postponing.",
+        epilog=(
+            "Local by default. Nothing moves without --apply. "
+            "No model to hand? Add --no-model, or --api hf for free hosted Gemma."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"sloth {__version__}")
     parser.add_argument("--config", type=Path, help="path to config.toml")
-    parser.add_argument("--model", help="model name (default: llama3.2:3b)")
+    parser.add_argument("--model", help="model name (default: gemma3:4b)")
     parser.add_argument("--vision-model", help="vision model name for `fridge`")
-    parser.add_argument("--base-url", help="local server URL (default Ollama's)")
+    parser.add_argument("--base-url", help="server URL (default: Ollama's)")
     parser.add_argument(
         "--api",
-        choices=("ollama", "openai"),
-        help="local server dialect: ollama, or openai for llama.cpp/vLLM/LM Studio",
+        choices=("ollama", "openai", "huggingface", "hf"),
+        help=(
+            "where the weights run: ollama (default), openai for "
+            "llama.cpp/vLLM/LM Studio, or hf for Hugging Face's free tier"
+        ),
     )
     parser.add_argument(
         "--no-model",
@@ -164,7 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
     fridge = subparsers.add_parser(
         "fridge",
         help="turn a fridge photo into a shopping list",
-        description="Needs a local vision model, e.g. `ollama pull qwen2.5vl:3b`.",
+        description=(
+            "Needs a vision model: `ollama pull gemma3:4b`, or --api hf to borrow one."
+        ),
     )
     fridge.add_argument("photos", type=Path, nargs="+")
     fridge.add_argument(
@@ -213,7 +221,9 @@ def resolve(args: argparse.Namespace) -> tuple[SlothConfig, Model, Printer]:
         vision_name=args.vision_model,
         base_url=args.base_url,
         api=args.api,
-    )
+        # `--api hf` on its own is a complete configuration: resolved() fills
+        # in that backend's URL, model names and token.
+    ).resolved()
     printer = Printer(quiet=args.quiet)
     model: Model = NullModel() if args.no_model else LocalModel(config.model)
     return config, model, printer
@@ -445,6 +455,19 @@ def cmd_nap(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fix_hints(model_config) -> list[str]:
+    """What to type next, depending on which backend went quiet."""
+    if model_config.api == "ollama":
+        return [
+            "try:  ollama serve",
+            f"      ollama pull {model_config.name}",
+            "      (or `sloth --api hf doctor` to use Hugging Face instead)",
+        ]
+    if model_config.api == "huggingface":
+        return ["check your connection, then:  sloth --api hf doctor"]
+    return [f"start your server on {model_config.base_url}, then run doctor again"]
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config, model, out = resolve(args)
     out.always(SLOTH)
@@ -456,25 +479,39 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     found = "found" if Path(config_path).is_file() else "not found (using defaults)"
     out.always(f"  config          {config_path} {out.dim(f'({found})')}")
     out.always(f"  journal         {config.journal_path}")
+    model_config = config.model
     out.always("")
-    out.always(out.bold("local model"))
-    out.always(f"  backend         {config.model.api} @ {config.model.base_url}")
-    out.always(f"  text model      {config.model.name}")
-    out.always(f"  vision model    {config.model.vision_name}")
+    out.always(out.bold("model"))
+    out.always(f"  backend         {model_config.api} @ {model_config.base_url}")
+    out.always(f"  text model      {model_config.name}")
+    out.always(f"  vision model    {model_config.vision_name}")
+    out.always(
+        "  privacy         "
+        + (
+            out.green("stays on this machine")
+            if model_config.is_local
+            else out.yellow("prompts are sent to " + model_config.base_url)
+        )
+    )
 
     if isinstance(model, NullModel):
         out.always(out.yellow("  status          skipped (--no-model)"))
         return 0
 
     assert isinstance(model, LocalModel)
+    if model_config.needs_token:
+        out.always(out.red("  status          no token"))
+        out.always(f"  {out.dim(HF_TOKEN_HELP)}")
+        return 1
+
     try:
         installed = model.list_models()
     except ModelUnavailable as exc:
         out.always(out.red("  status          unreachable"))
         out.always(f"  {out.dim(str(exc))}")
         out.always("")
-        out.always("  try:  ollama serve")
-        out.always("        ollama pull llama3.2:3b")
+        for line in _fix_hints(model_config):
+            out.always(f"  {line}")
         return 1
 
     out.always(out.green(f"  status          reachable, {len(installed)} model(s)"))
@@ -483,13 +520,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     missing = [
         name
-        for name in (config.model.name, config.model.vision_name)
+        for name in (model_config.name, model_config.vision_name)
         if not model.has_model(name)
     ]
+    if missing and model_config.api == "ollama":
+        out.always("")
+        for name in sorted(set(missing)):
+            out.always(out.yellow(f"  not pulled: {name}  ->  ollama pull {name}"))
+        return 1
     if missing:
         out.always("")
-        for name in missing:
-            out.always(out.yellow(f"  not pulled: {name}  ->  ollama pull {name}"))
+        for name in sorted(set(missing)):
+            out.always(out.yellow(f"  {name} is not in this backend's model list"))
         return 1
 
     out.always("")

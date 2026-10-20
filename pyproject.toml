@@ -5,11 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "sloth-mode"
 version = "0.1.0"
-description = "Local open-weight AI that does your chores while you nap. Zero dependencies."
+description = "Open-weight AI (Gemma) that does your chores while you nap. Local by default, zero dependencies."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 keywords = [
+    "gemma",
+    "huggingface",
     "ollama",
     "local-llm",
     "open-weights",

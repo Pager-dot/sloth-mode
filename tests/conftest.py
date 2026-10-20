@@ -85,6 +85,8 @@ def fake_model() -> Callable[..., FakeModel]:
 @pytest.fixture
 def config(tmp_path: Path) -> SlothConfig:
     cfg = SlothConfig()
+    # Resolved, as the CLI always hands it to the agents.
+    cfg.model = cfg.model.resolved()
     cfg.state_dir = tmp_path / "state"
     return cfg
 

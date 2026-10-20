@@ -227,3 +227,34 @@ def test_undo_cleans_up_the_folders_it_created(messy_dir, capsys):
     assert "removed" in out
     assert not (messy_dir / "Admin").exists()
     assert (messy_dir / "ACME Invoice March 2024.pdf").exists()
+
+
+def test_doctor_explains_a_missing_hugging_face_token(monkeypatch, capsys):
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    code = main(["--api", "hf", "doctor"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "google/gemma-3-4b-it" in out
+    assert "no token" in out
+    assert "huggingface.co/settings/tokens" in out
+    # A hosted backend must say so out loud.
+    assert "prompts are sent to" in out
+
+
+def test_doctor_names_gemma_for_the_local_backend(capsys):
+    code = main(["--base-url", "http://127.0.0.1:1", "doctor"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "gemma3:4b" in out
+    assert "stays on this machine" in out
+    assert "ollama pull gemma3:4b" in out
+    assert "--api hf" in out
+
+
+def test_an_unknown_backend_is_a_clean_error(capsys):
+    with pytest.raises(SystemExit):
+        main(["--api", "wishful-thinking", "doctor"])
