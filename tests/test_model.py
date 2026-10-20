@@ -210,3 +210,60 @@ def test_unreachable_message_names_the_backend():
     )
     with pytest.raises(ModelUnavailable, match="your local server"):
         server.chat([{"role": "user", "content": "hi"}])
+
+
+# ---------------------------------------------------------------------------
+# Ollama's hosted catalogue
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_alias_resolves_to_gpt_oss(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama_pretend")
+
+    config = ModelConfig(api="cloud").resolved()
+
+    assert config.api == "ollama-cloud"
+    assert config.base_url == "https://ollama.com"
+    # Apache-2.0 open weights, 120B parameters, nothing to download.
+    assert config.name == "gpt-oss:120b"
+    # gpt-oss cannot see, so the fridge agent gets an open vision model.
+    assert config.vision_name == "gemma4:31b"
+    assert config.api_key == "ollama_pretend"
+    assert config.needs_token is False
+
+
+def test_cloud_speaks_the_ollama_dialect_but_is_not_local(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama_pretend")
+
+    config = ModelConfig(api="ollama-cloud").resolved()
+
+    # Same wire format as a laptop Ollama...
+    assert config.dialect == "ollama"
+    # ...but the prompts leave the building, and the tool must say so.
+    assert config.is_local is False
+    assert ModelConfig().resolved().dialect == "ollama"
+    assert ModelConfig(api="hf").resolved().dialect == "openai"
+
+
+@pytest.mark.parametrize("variable", ["OLLAMA_API_KEY", "OLLAMA_TOKEN"])
+def test_cloud_reads_either_key_variable(monkeypatch, variable):
+    for name in ("OLLAMA_API_KEY", "OLLAMA_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "ollama_pretend")
+
+    assert ModelConfig(api="cloud").resolved().api_key == "ollama_pretend"
+
+
+def test_cloud_without_a_key_explains_itself(monkeypatch):
+    for name in ("OLLAMA_API_KEY", "OLLAMA_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    model = LocalModel(ModelConfig(api="cloud"))
+
+    assert model.available() is False
+    with pytest.raises(ModelUnavailable, match="ollama.com/settings/keys"):
+        model.chat([{"role": "user", "content": "hi"}])
+
+
+def test_a_local_ollama_sends_no_token_by_default():
+    assert ModelConfig().resolved().api_key == ""
+    assert ModelConfig().resolved().needs_token is False

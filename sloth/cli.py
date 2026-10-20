@@ -20,7 +20,7 @@ from .agents import fridge as fridge_agent
 from .agents import tidy as tidy_agent
 from .config import SlothConfig, default_config_path, load_config
 from .journal import Journal
-from .model import HF_TOKEN_HELP, LocalModel, Model, ModelUnavailable, NullModel
+from .model import LocalModel, Model, ModelUnavailable, NullModel, token_help
 
 SLOTH = r"""
       (
@@ -111,10 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", help="server URL (default: Ollama's)")
     parser.add_argument(
         "--api",
-        choices=("ollama", "openai", "huggingface", "hf"),
+        choices=("ollama", "openai", "huggingface", "hf", "ollama-cloud", "cloud"),
         help=(
             "where the weights run: ollama (default), openai for "
-            "llama.cpp/vLLM/LM Studio, or hf for Hugging Face's free tier"
+            "llama.cpp/vLLM/LM Studio, hf for Hugging Face's free tier, or "
+            "cloud for Ollama's hosted models (gpt-oss:120b, no download)"
         ),
     )
     parser.add_argument(
@@ -465,6 +466,8 @@ def _fix_hints(model_config) -> list[str]:
         ]
     if model_config.api == "huggingface":
         return ["check your connection, then:  sloth --api hf doctor"]
+    if model_config.api == "ollama-cloud":
+        return ["check your connection, then:  sloth --api cloud doctor"]
     return [f"start your server on {model_config.base_url}, then run doctor again"]
 
 
@@ -501,7 +504,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     assert isinstance(model, LocalModel)
     if model_config.needs_token:
         out.always(out.red("  status          no token"))
-        out.always(f"  {out.dim(HF_TOKEN_HELP)}")
+        out.always(f"  {out.dim(token_help(model_config.api))}")
         return 1
 
     try:
@@ -523,7 +526,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for name in (model_config.name, model_config.vision_name)
         if not model.has_model(name)
     ]
-    if missing and model_config.api == "ollama":
+    if missing and model_config.api == "ollama":  # a cloud model needs no pull
         out.always("")
         for name in sorted(set(missing)):
             out.always(out.yellow(f"  not pulled: {name}  ->  ollama pull {name}"))
@@ -533,6 +536,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         for name in sorted(set(missing)):
             out.always(out.yellow(f"  {name} is not in this backend's model list"))
         return 1
+
+    if not model_config.is_local:
+        # A public catalogue proves the service is up, not that it will talk
+        # to us; only a real call proves the token.
+        out.always("")
+        try:
+            reply = model.probe().strip().replace("\n", " ")[:60]
+        except ModelUnavailable as exc:
+            out.always(out.red("  token           rejected"))
+            out.always(f"  {out.dim(str(exc))}")
+            return 1
+        out.always(out.green(f"  token           works (it said: {reply!r})"))
 
     out.always("")
     out.always(out.green("  everything it needs is here. go and do nothing."))

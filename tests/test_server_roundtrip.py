@@ -213,3 +213,47 @@ def test_the_tidy_agent_over_real_http(server, config, messy_dir):
     assert by_name["notes.txt"].decided_by == "heuristic"
     assert by_name["notes.txt"].category == "Reading/Notes"
     assert [p.decided_by for p in plan.proposals].count("heuristic") == 1
+
+
+def test_ollama_cloud_sends_the_bearer_token(server):
+    """The hosted catalogue needs auth on the same /api/chat the laptop uses."""
+    NEXT["content"] = '{"ok": true}'
+    model = LocalModel(
+        ModelConfig(api="cloud", base_url=server, api_key="ollama_pretend", timeout=10)
+    )
+
+    model.chat([{"role": "user", "content": "hi"}], schema=SCHEMA)
+
+    _, path, headers, body = RECEIVED[-1]
+    assert path == "/api/chat"  # the Ollama dialect, not /v1/...
+    assert headers["Authorization"] == "Bearer ollama_pretend"
+    assert body["model"] == "gpt-oss:120b"
+    assert body["format"] == SCHEMA
+
+
+def test_a_local_ollama_sends_no_authorization_header(server):
+    NEXT["content"] = "{}"
+    LocalModel(ModelConfig(base_url=server, timeout=10)).chat(
+        [{"role": "user", "content": "hi"}]
+    )
+
+    _, _path, headers, _body = RECEIVED[-1]
+    assert "Authorization" not in headers
+
+
+def test_probe_makes_one_real_call(server):
+    NEXT["content"] = "ok"
+    model = LocalModel(ModelConfig(api="cloud", base_url=server, api_key="k", timeout=10))
+
+    assert model.probe() == "ok"
+    assert len([r for r in RECEIVED if r[0] == "POST"]) == 1
+
+
+def test_probe_surfaces_a_rejected_cloud_token(server):
+    NEXT.update(status=401, error="Unauthorized")
+    model = LocalModel(
+        ModelConfig(api="cloud", base_url=server, api_key="wrong", timeout=10)
+    )
+
+    with pytest.raises(ModelUnavailable, match="Ollama rejected the token"):
+        model.probe()

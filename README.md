@@ -42,6 +42,7 @@ engine:
 | **Gemma 3** (and any other open weights: Qwen, Llama, Mistral, Phi…) | every decision the tool makes |
 | **Ollama** / **llama.cpp** / **vLLM** / **LM Studio** | local inference, your choice of server |
 | **Hugging Face Inference Providers** | the same open weights, free tier, nothing to install |
+| **Ollama Cloud** (`gpt-oss:120b`, Apache-2.0) | 120B open weights, no download, no GPU |
 | **Schema-constrained decoding** | what makes a 3B model reliable enough to trust with your files |
 | **A ~200-line agent harness** ([`sloth/harness.py`](sloth/harness.py)) | bounded tool-calling loop, read-only by default |
 | **The Python standard library** | literally the only dependency |
@@ -92,6 +93,22 @@ Same open weights (`google/gemma-3-4b-it`), and the only line of config is the
 flag. The honest trade: **this one sends your prompts over the network**, so
 filenames and text excerpts leave your machine. `sloth doctor` says so in
 yellow every time, and the two local backends never do it.
+
+### Hosted open weights, too big for a laptop
+
+Ollama also hosts a catalogue of open models, same `/api/chat` protocol, with
+a key from [ollama.com/settings/keys](https://ollama.com/settings/keys):
+
+```bash
+export OLLAMA_API_KEY=...
+sloth --api cloud tidy ~/Downloads          # gpt-oss:120b, Apache-2.0
+sloth --api cloud --model gemma4:31b brief ~/chat-exports
+```
+
+`gpt-oss:120b` is 120B parameters of open weights that no laptop will hold,
+and it costs you no disk at all. It has no vision, so `fridge` falls back to
+`gemma4:31b` from the same catalogue. Like `--api hf`, this sends prompts over
+the network.
 
 ### No model at all
 
@@ -296,14 +313,23 @@ opener with proxies explicitly disabled, so a misconfigured `HTTPS_PROXY`
 cannot quietly ship your invoices somewhere. The only traffic is to the
 server you started, and the whole tool works with the Wi-Fi off.
 
-`--api hf` is the exception, and it is opt-in. It sends prompts — filenames,
-text excerpts, the fridge photo — to Hugging Face, so it uses your normal
-proxy settings like any other HTTPS client. `sloth doctor` prints which of
-the two you are on:
+`--api hf` and `--api cloud` are the exceptions, and both are opt-in. They
+send prompts — filenames, text excerpts, the fridge photo — to Hugging Face or
+Ollama, so they use your normal proxy settings like any other HTTPS client.
+`sloth doctor` prints which side you are on:
 
 ```console
 privacy         stays on this machine
 privacy         prompts are sent to https://router.huggingface.co/v1
+```
+
+On a hosted backend it also spends one token proving your key actually works,
+rather than letting a bad key fail halfway through tidying a folder:
+
+```console
+token           works (it said: 'ok')
+token           rejected
+Ollama rejected the token (HTTP 401). {"error":"Unauthorized"}
 ```
 
 If that matters for a particular folder, `sloth --no-model tidy` gets you the
@@ -313,7 +339,7 @@ heuristic pass with no model and no network at all.
 
 ```bash
 make install   # editable install plus pytest and ruff
-make test      # 163 tests, no model server required
+make test      # 174 tests, no model server required
 make lint      # ruff check + format check
 make demo      # tidy and brief the example data, heuristics only
 ```

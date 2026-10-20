@@ -258,3 +258,17 @@ def test_doctor_names_gemma_for_the_local_backend(capsys):
 def test_an_unknown_backend_is_a_clean_error(capsys):
     with pytest.raises(SystemExit):
         main(["--api", "wishful-thinking", "doctor"])
+
+
+def test_doctor_explains_a_missing_ollama_cloud_key(monkeypatch, capsys):
+    for name in ("OLLAMA_API_KEY", "OLLAMA_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    code = main(["--api", "cloud", "doctor"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "gpt-oss:120b" in out
+    assert "no token" in out
+    assert "ollama.com/settings/keys" in out
+    assert "prompts are sent to https://ollama.com" in out
