@@ -204,6 +204,22 @@ def build_parser() -> argparse.ArgumentParser:
     nap.add_argument("--rounds", type=int, help="stop after N rounds (default: forever)")
     nap.set_defaults(func=cmd_nap)
 
+    gui = subparsers.add_parser(
+        "gui",
+        help="open a small local web UI",
+        description=(
+            "Serves a one-page UI on 127.0.0.1. Same rules as the CLI: "
+            "nothing moves until you press Apply, and Undo puts it back."
+        ),
+    )
+    gui.add_argument("path", type=Path, nargs="?", default=Path.home() / "Downloads")
+    gui.add_argument("--port", type=int, default=8777)
+    gui.add_argument("--host", default="127.0.0.1")
+    gui.add_argument(
+        "--no-browser", action="store_true", help="do not open a browser window"
+    )
+    gui.set_defaults(func=cmd_gui)
+
     doctor = subparsers.add_parser("doctor", help="check the local setup")
     doctor.set_defaults(func=cmd_doctor)
 
@@ -473,6 +489,36 @@ def _fix_hints(model_config) -> list[str]:
     if model_config.api == "ollama-cloud":
         return ["check your connection, then:  sloth --api cloud doctor"]
     return [f"start your server on {model_config.base_url}, then run doctor again"]
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .gui import serve
+
+    config, model, out = resolve(args)
+    root = args.path.expanduser()
+
+    def ready(url: str) -> None:
+        out.always(SLOTH)
+        out.always(f"  the sloth is at {out.bold(url)}")
+        out.always(out.dim("  (the token in that link is what keeps other"))
+        out.always(out.dim("   pages in your browser from using this)"))
+        out.always(out.dim("  ctrl-c to stop"))
+
+    try:
+        serve(
+            config,
+            model,
+            root,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+            on_ready=ready,
+        )
+    except OSError as exc:
+        out.error(f"could not start on {args.host}:{args.port} ({exc})")
+        out.say(out.dim("another sloth already napping there? try --port 8778"))
+        return 1
+    return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

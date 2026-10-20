@@ -29,6 +29,14 @@ demo: ## build a fake messy folder and tidy it with heuristics only
 	$(PY) -m sloth --no-model tidy examples/messy-downloads
 	$(PY) -m sloth --no-model brief examples/chats
 
+.PHONY: gui
+gui: ## open the web UI with no model (heuristics only)
+	$(PY) -m sloth --no-model gui examples/messy-downloads
+
+.PHONY: record
+record: ## re-record the README demo (needs the demo extra + a browser)
+	$(PY) scripts/record_demo.py --api cloud
+
 .PHONY: doctor
 doctor: ## check whether a local model is reachable
 	$(PY) -m sloth doctor

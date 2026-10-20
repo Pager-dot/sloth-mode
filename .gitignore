@@ -13,3 +13,7 @@ htmlcov/
 # local scratch output
 *.jsonl
 briefs/
+
+# scratch folder the demo recorder copies files into
+docs/demo/_folder/
+docs/demo/_frames/

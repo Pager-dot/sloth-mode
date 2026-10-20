@@ -16,7 +16,13 @@
 
 Zero dependencies. Runs on Gemma. Local by default.
 
-[Why](#why) · [Install](#install) · [The three agents](#the-three-agents) · [How it works](#how-it-works) · [Config](#config) · [Safety](#the-undo-guarantee)
+[Why](#why) · [Install](#install) · [The agents](#the-three-agents) · [The GUI](#the-gui) · [How it works](#how-it-works) · [Config](#config) · [Safety](#the-undo-guarantee)
+
+![Sloth Mode tidying a folder, undoing it, and summarising a night of group chats](docs/demo/sloth-demo.gif)
+
+<sub>Real run against `gpt-oss:120b`. Plan → Apply → Undo → morning brief, 22 seconds.
+📺 **[Watch the full video](https://youtu.be/REPLACE_WITH_YOUR_VIDEO_ID)** ·
+[download the MP4](docs/demo/sloth-demo.mp4)</sub>
 
 </div>
 
@@ -213,6 +219,28 @@ sloth undo --batch <id>                    # reverse any batch, not just the las
 sloth doctor                               # is the model reachable? is it pulled?
 ```
 
+## The GUI
+
+Prefer clicking to typing:
+
+```bash
+sloth gui                 # or: sloth gui ~/Downloads --port 8777
+```
+
+It serves a single page on `127.0.0.1` from the standard library — adding a
+web framework to a zero-dependency tool would be work, and this project is
+against work. Same rules as the CLI: **Plan** proposes and touches nothing,
+**Apply** carries out the plan you were just shown, **Undo** puts it back.
+
+Three things worth knowing about how it is wired:
+
+- It binds to **loopback only**, and every API call must carry a token minted
+  at startup and embedded in the page. Without that, any website open in your
+  browser could POST to `127.0.0.1` and rearrange your Downloads folder.
+- **Apply runs the plan the server already computed.** It never re-asks the
+  model and hopes for the same answer, so what you approved is what runs.
+- A plan can only be applied once. Press Plan again for a fresh one.
+
 ## How it works
 
 ```
@@ -339,10 +367,21 @@ heuristic pass with no model and no network at all.
 
 ```bash
 make install   # editable install plus pytest and ruff
-make test      # 174 tests, no model server required
+make test      # 250 tests, no model server required
 make lint      # ruff check + format check
 make demo      # tidy and brief the example data, heuristics only
+make gui       # the web UI, heuristics only
 ```
+
+To re-record the demo at the top of this file:
+
+```bash
+pip install -e ".[demo]"
+python scripts/record_demo.py --api cloud      # or --no-model
+```
+
+It copies `examples/messy-downloads` to a scratch folder first, so a recording
+never touches anything of yours. Out come the MP4, the GIF, and the stills.
 
 Tests never start a model or touch the network: `tests/conftest.py` has a `FakeModel` that replays
 canned responses and records what it was asked, which is how the prompts and
