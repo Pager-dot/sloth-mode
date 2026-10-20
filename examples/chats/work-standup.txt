@@ -1,0 +1,12 @@
+[08:02] Ana: morning all, standup notes in here today, no call
+[08:03] Ana: the migration finished overnight, 2.1M rows moved, no errors
+[08:04] Marcus: nice. i'll run the reconciliation script this morning
+[08:06] Ana: the staging deploy is blocked on the new env var, SLOTH_STATE_DIR
+[08:07] Marcus: who owns that ticket
+[08:09] Ana: nobody yet. can you pick it up? it's about 20 minutes of work
+[08:10] Marcus: sure
+[08:12] Ana: client review moved from wednesday to friday 14:00, calendar updated
+[08:13] Jo: i'll have the slides ready thursday eod
+[08:14] Marcus: coffee machine is broken again
+[08:15] Jo: tragedy
+[08:20] Ana: last thing: please review the open PR before friday, it's blocking the release

@@ -1,0 +1,13 @@
+{
+  "messages": [
+    {"sender_name": "Leah", "content": "are we still doing saturday?"},
+    {"sender_name": "Sam", "content": "venue cancelled, they double booked us"},
+    {"sender_name": "Leah", "content": "ugh. they offered sunday instead"},
+    {"sender_name": "Sam", "content": "sunday works for me"},
+    {"sender_name": "Leah", "content": "sam can you call them and confirm sunday? you have the booking ref"},
+    {"sender_name": "Sam", "content": "ok"},
+    {"sender_name": "Leah", "content": "deposit is due friday, don't forget"},
+    {"sender_name": "Kai", "content": "i can bring the speakers either day"},
+    {"sender_name": "Kai", "content": "haha"}
+  ]
+}
