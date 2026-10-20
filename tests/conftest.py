@@ -16,20 +16,6 @@ from sloth.config import SlothConfig
 from sloth.model import TOKEN_VARS, parse_json
 
 
-@pytest.fixture(autouse=True)
-def _no_ambient_tokens(monkeypatch):
-    """Keep the suite hermetic, whatever is exported in the shell.
-
-    Anyone who has actually run `sloth --api cloud` has OLLAMA_API_KEY in
-    their environment, and `ModelConfig.resolved()` picks it up. That made
-    the token tests pass in CI and fail on their machine -- and a failing
-    assertion prints the config, key included, into the pytest report.
-    """
-    for names in TOKEN_VARS.values():
-        for name in names:
-            monkeypatch.delenv(name, raising=False)
-
-
 class FakeModel:
     """A model that replays canned responses, and records what it was asked.
 
@@ -97,6 +83,20 @@ def fake_model() -> Callable[..., FakeModel]:
         return FakeModel(responses, **kwargs)
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_credentials(monkeypatch):
+    """Hide any real API keys from every test.
+
+    Without this the suite's result depends on who is running it: a developer
+    with OLLAMA_API_KEY exported gets different behaviour from CI, and a
+    failure message can print the key into a log. Tests that want a token set
+    their own.
+    """
+    for names in TOKEN_VARS.values():
+        for name in names:
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

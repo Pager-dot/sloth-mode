@@ -38,6 +38,25 @@ CHUNK_SCHEMA: dict[str, Any] = {
     "required": ["points"],
 }
 
+
+def brief_schema(lines: int) -> dict[str, Any]:
+    """The reduce schema, with the sentence count baked into it.
+
+    Backends that honour `format` will then refuse to emit one run-on string,
+    which is what gpt-oss:120b did when the count lived only in the prompt.
+    """
+    schema = json.loads(json.dumps(BRIEF_SCHEMA))  # cheap deep copy
+    schema["properties"]["summary"].update(
+        minItems=lines,
+        maxItems=lines,
+        description=(
+            f"exactly {lines} separate sentence(s), one per array element; "
+            "never join them into a single string"
+        ),
+    )
+    return schema
+
+
 BRIEF_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -80,13 +99,17 @@ lists, and no other top-level key.
 _REDUCE_SYSTEM = """\
 You write a morning brief for someone who slept while all of this happened.
 Given bullets extracted from overnight messages, write:
-- "summary": a JSON array of exactly {lines} string(s), one sentence each.
-  An array of {lines}, not one string holding {lines} sentences. Plain and
-  concrete, no preamble, no "the group discussed" filler. Lead with what
-  changed.
+
+- "summary": an array of EXACTLY {lines} string(s). One sentence per element.
+  Each sentence must be under 25 words and end with a full stop. Do NOT join
+  them with "and", semicolons or commas into one long sentence: {lines}
+  element(s) means {lines} separate strings. Lead with what changed. Plain and
+  concrete, no preamble, no "the group discussed" filler. If there is more
+  news than fits, keep the {lines} most important and drop the rest.
 - "action_items": a JSON array of at most {max_items} objects
   {{"what": "...", "who_asked": "..."}}, things that need THIS person. Skip
-  anything already handled by someone else.
+  anything already handled by someone else, and do not address someone else's
+  task to the reader.
 - "ignorable": one clause naming what was just noise.
 
 Reply with one JSON object and nothing else:
@@ -391,6 +414,40 @@ def _as_bullet(value: Any) -> str:
     return str(value).strip()
 
 
+#: Sentence boundary: punctuation followed by whitespace. Decimals such as
+#: "2.1M rows" survive because there is no space after the dot.
+_SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
+
+
+def shape_summary(value: Any, lines: int) -> list[str]:
+    """Force a summary into at most ``lines`` single sentences.
+
+    The prompt and the schema both ask for this, and a model may still return
+    one run-on string containing everything (gpt-oss:120b does). Prompts are
+    persuasion; this is the part that cannot be ignored.
+    """
+    if isinstance(value, str):
+        value = [value]
+    sentences: list[str] = []
+    for chunk in value or []:
+        text = str(chunk).strip()
+        if not text:
+            continue
+        for part in _SENTENCE_END.split(text):
+            part = part.strip()
+            if not part:
+                continue
+            if part[-1] not in ".!?":
+                part = part.rstrip(",;:") + "."
+            # Splitting "a; b" leaves the second clause lowercase, which
+            # reads as broken. Leave names like iPhone or macOS alone.
+            opener = part.split(" ", 1)[0]
+            if part[0].islower() and not any(c.isupper() for c in opener):
+                part = part[0].upper() + part[1:]
+            sentences.append(part)
+    return sentences[:lines]
+
+
 def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict:
     system = _REDUCE_SYSTEM.format(
         lines=settings.summary_lines, max_items=settings.max_action_items
@@ -400,19 +457,13 @@ def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict
             {"role": "system", "content": system},
             {"role": "user", "content": "\n".join(f"- {b}" for b in bullets)},
         ],
-        schema=BRIEF_SCHEMA,
+        schema=brief_schema(settings.summary_lines),
     )
     payload = parse_json(raw)
     if not isinstance(payload, dict):
         raise ModelOutputError("reduce step did not return an object")
 
-    summary = payload.get("summary")
-    if isinstance(summary, str):
-        # Asked for an array of N sentences, an unschema'd model tends to
-        # return one string holding all N. Split it back out, or the
-        # two-line brief arrives as a single run-on line.
-        summary = _sentences(summary)
-    summary = [str(s).strip() for s in (summary or []) if str(s).strip()]
+    summary = shape_summary(payload.get("summary"), settings.summary_lines)
 
     items: list[dict[str, str]] = []
     for item in coerce_list(payload.get("action_items"), "action_items"):
@@ -427,16 +478,10 @@ def _reduce(model: Model, bullets: Sequence[str], settings: BriefConfig) -> dict
             )
 
     return {
-        "summary": summary[: settings.summary_lines] or ["Nothing worth waking up for."],
+        "summary": summary or ["Nothing worth waking up for."],
         "action_items": items[: settings.max_action_items],
         "ignorable": str(payload.get("ignorable") or "").strip(),
     }
-
-
-def _sentences(text: str) -> list[str]:
-    """Split a paragraph into sentences, keeping their terminators."""
-    parts = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip())]
-    return [s for s in parts if s]
 
 
 _STOPWORDS = frozenset(
@@ -551,7 +596,10 @@ def _extractive(
         return sum(frequency.get(w, 0) for w in words) / (len(words) ** 0.5)
 
     ranked = sorted(sentences, key=score, reverse=True)
-    summary = [_without_timestamp(s) for s in _dedupe(ranked)[: settings.summary_lines]]
+    summary = shape_summary(
+        [_without_timestamp(s) for s in _dedupe(ranked)[: settings.summary_lines]],
+        settings.summary_lines,
+    )
 
     actions = [
         {"what": _strip_speaker(s), "who_asked": _speaker(s)}
